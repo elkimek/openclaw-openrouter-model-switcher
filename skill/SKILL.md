@@ -11,7 +11,7 @@ Manage the OpenRouter daily spending budget and model tier switching.
 
 The base command is:
 ```
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py
+python3 ~/.openclaw/openrouter-model-switcher/budget-ctl.py
 ```
 
 ## Parsing user input

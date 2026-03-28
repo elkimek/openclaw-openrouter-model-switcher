@@ -63,6 +63,10 @@ def die(msg: str):
     raise SystemExit(1)
 
 
+def ensure_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def get_balance_json() -> dict:
     result = subprocess.run(
         [sys.executable, str(BALANCE_SCRIPT)],
@@ -83,6 +87,7 @@ def load_override() -> dict | None:
 
 
 def save_override(data: dict) -> None:
+    ensure_state_dir()
     OVERRIDE_FILE.write_text(json.dumps(data, indent=2))
 
 
@@ -111,6 +116,7 @@ def load_tiers() -> list[dict]:
 
 
 def save_tiers(tiers: list[dict]) -> None:
+    ensure_state_dir()
     TIERS_FILE.write_text(json.dumps(
         {"tiers": sorted(tiers, key=lambda t: t["threshold"])}, indent=2
     ))
@@ -126,13 +132,10 @@ def normalize_model(model: str) -> str:
     """Auto-prefix openrouter/ if the model looks like provider/name without it."""
     model = model.strip()
     parts = model.split("/")
-    # Already fully qualified: openrouter/anthropic/claude-sonnet-4.6
     if len(parts) >= 3 and parts[0] == "openrouter":
         return model
-    # provider/model format: anthropic/claude-sonnet-4.6 -> openrouter/...
     if len(parts) == 2:
         return f"openrouter/{model}"
-    # bare model name — return as-is, user probably knows what they're doing
     return model
 
 
@@ -145,6 +148,20 @@ def resolve_budget_and_mode(balance: dict) -> tuple[float, str]:
     target_days = (override or {}).get("target_days", DEFAULT_TARGET_DAYS)
     budget = resolve_auto_budget(remaining, target_days)
     return budget, f"auto ${budget:.2f}/day ({target_days}d)"
+
+
+def parse_int(value: str, label: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        die(f"{label} must be an integer, got: {value!r}")
+
+
+def parse_float(value: str, label: str) -> float:
+    try:
+        return float(value)
+    except ValueError:
+        die(f"{label} must be a number, got: {value!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +180,12 @@ def cmd_status():
     pct = min(100, (daily / budget) * 100) if budget > 0 else 100
     current_tier = state.get("current_tier", "unknown")
 
-    # Estimate days remaining at current daily rate
+    # Estimate days remaining at weekly average (more stable than daily)
     avg_daily = balance.get("usage_weekly", daily * 7) / 7
-    days_left = round(remaining / avg_daily) if avg_daily > 0.001 else 999
+    if avg_daily > 0.01:
+        days_left = round(remaining / avg_daily)
+    else:
+        days_left = None  # no meaningful data yet
 
     # Mark active tier
     tier_list = []
@@ -179,21 +199,24 @@ def cmd_status():
             entry["active"] = True
         tier_list.append(entry)
 
-    print(json.dumps({
+    result = {
         "mode": mode,
         "daily_budget": round(budget, 2),
         "daily_spend": round(daily, 2),
         "daily_pct": round(pct),
         "remaining": remaining,
-        "days_left": days_left,
         "current_tier": current_tier,
         "tiers": tier_list,
-    }, indent=2))
+    }
+    if days_left is not None:
+        result["days_left"] = days_left
+
+    print(json.dumps(result, indent=2))
 
 
 def cmd_set(amount: float):
     if amount <= 0:
-        die("Budget must be positive")
+        die("Budget must be a positive number (e.g. 5 for $5/day)")
     save_override({"mode": "fixed", "budget": amount})
     print(json.dumps({"ok": True, "mode": "fixed", "budget": amount}))
 
@@ -232,7 +255,8 @@ def cmd_tiers_set(key: str, model: str, threshold: int | None = None):
     if existing:
         existing["model"] = model
         if threshold is not None:
-            # Check for threshold collision with a different tier
+            if threshold < 0 or threshold > 100:
+                die("Threshold must be 0-100")
             for t in tiers:
                 if t["key"] != key and t["threshold"] == threshold:
                     die(f"Threshold {threshold}% is already used by tier '{t['key']}'")
@@ -278,9 +302,9 @@ def cmd_tiers_reset():
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h", "help"):
         print(__doc__.strip())
-        raise SystemExit(1)
+        raise SystemExit(0)
 
     cmd = sys.argv[1]
 
@@ -289,20 +313,19 @@ def main():
     elif cmd == "set":
         if len(sys.argv) < 3:
             die("Usage: set <amount>")
-        cmd_set(float(sys.argv[2]))
+        cmd_set(parse_float(sys.argv[2], "Budget"))
     elif cmd == "auto":
-        days = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_TARGET_DAYS
+        days = parse_int(sys.argv[2], "Days") if len(sys.argv) > 2 else DEFAULT_TARGET_DAYS
         cmd_auto(days)
     elif cmd == "tiers":
         if len(sys.argv) < 3:
             cmd_tiers()
         elif sys.argv[2] == "set":
-            # tiers set <key> <model> [<pct>]
             if len(sys.argv) < 5:
                 die("Usage: tiers set <key> <model> [<threshold_pct>]")
             key = sys.argv[3]
             model = sys.argv[4]
-            threshold = int(sys.argv[5]) if len(sys.argv) > 5 else None
+            threshold = parse_int(sys.argv[5], "Threshold") if len(sys.argv) > 5 else None
             cmd_tiers_set(key, model, threshold)
         elif sys.argv[2] == "remove":
             if len(sys.argv) < 4:
@@ -313,7 +336,7 @@ def main():
         else:
             die(f"Unknown tiers subcommand: {sys.argv[2]}")
     else:
-        die(f"Unknown command: {cmd}")
+        die(f"Unknown command: {cmd}. Run with --help for usage.")
 
 
 if __name__ == "__main__":

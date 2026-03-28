@@ -81,7 +81,9 @@ def api_get(path: str, api_key: str) -> dict:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:300]
-        fail(f"request failed ({exc.code}): {body}")
+        # Avoid logging error bodies that may echo back the API key
+        safe_body = body if "sk-or-" not in body else "(redacted — may contain credentials)"
+        fail(f"request failed ({exc.code}): {safe_body}")
     except urllib.error.URLError as exc:
         fail(f"network error: {exc.reason}")
 

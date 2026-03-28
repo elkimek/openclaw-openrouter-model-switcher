@@ -72,8 +72,13 @@ python3 openrouter-model-switcher.py --query-sessions   # force session reconcil
 python3 openrouter-model-switcher.py --daily-budget 5   # override budget for this run
 ```
 
-State file: `~/.openclaw/or-switch-state.json`
-Log file: `~/.openclaw/or-switch.log`
+**Files:**
+- Log: `~/.openclaw/or-switch.log`
+- State: `~/.openclaw/or-switch-state.json`
+- Tiers: `~/.openclaw/or-tiers.json`
+- Budget override: `~/.openclaw/or-budget-override.json`
+
+When daily spend drops from >30% to near-zero (OpenRouter daily reset), the switcher automatically snaps back to the best tier.
 
 ### `budget-ctl.py`
 
@@ -106,7 +111,7 @@ cp skill/SKILL.md ~/.openclaw/workspace/skills/budget/SKILL.md
 
 Then use `/budget`, `/budget set 5`, `/budget tiers`, etc. from any connected channel (Matrix, SimpleX, etc.). The skill handles natural language — saying "change cheap to gemini flash" or "add a tier at 50%" works.
 
-**Note:** The skill references absolute paths. Update the paths in `SKILL.md` if your install location differs from `~/.openclaw/openrouter-model-switcher/`.
+**Note:** The skill uses `~/.openclaw/openrouter-model-switcher/` as the install path. Update the paths in `SKILL.md` if yours differs.
 
 ## Scheduling
 
@@ -115,8 +120,10 @@ Run the switcher every 5-10 minutes.
 ### cron
 
 ```cron
-*/10 * * * * /usr/bin/python3 /path/to/openrouter-model-switcher.py >> /tmp/openrouter-model-switcher.log 2>&1
+*/10 * * * * /usr/bin/python3 /path/to/openrouter-model-switcher.py 2>&1
 ```
+
+The switcher logs to `~/.openclaw/or-switch.log` automatically; no output redirect needed.
 
 ### systemd
 

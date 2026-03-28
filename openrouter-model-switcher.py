@@ -71,13 +71,14 @@ def parse_args() -> argparse.Namespace:
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+_log_handlers = [logging.FileHandler(LOG_FILE)]
+if sys.stderr.isatty():
+    _log_handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ def run_command(command: list[str], timeout: int = 60) -> subprocess.CompletedPr
             command, capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "NO_COLOR": "1"},
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         fail(f"command timed out after {timeout}s: {' '.join(command)}")
     if result.returncode != 0:
         fail(
@@ -202,11 +203,15 @@ def get_target_tier(spent_pct: float, tiers: list[dict]) -> tuple[str, str]:
 
 
 def load_state() -> dict:
+    default = {"last_default_tier": None, "last_session_patch_tier": None, "last_spent_pct": 0.0}
     if not STATE_FILE.exists():
-        return {"last_default_tier": None, "last_session_patch_tier": None, "last_spent_pct": 0.0}
-    raw = json.loads(STATE_FILE.read_text())
+        return default
+    try:
+        raw = json.loads(STATE_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return default
     if not isinstance(raw, dict):
-        fail(f"invalid state in {STATE_FILE}")
+        return default
     ct = raw.get("current_tier")
     return {
         "last_default_tier": raw.get("last_default_tier", ct),
@@ -281,6 +286,10 @@ def main() -> int:
     daily_budget = resolve_daily_budget(args, remaining)
     tiers = load_tiers()
 
+    # Guard against zero/negative budget
+    if daily_budget <= 0:
+        daily_budget = 0.01
+
     if remaining <= 0:
         log.warning("No credits remaining ($%.2f). Forcing cheapest tier.", remaining)
         spent_pct = 100.0
@@ -290,21 +299,21 @@ def main() -> int:
     state = load_state()
     target_tier, target_model = get_target_tier(spent_pct, tiers)
 
-    log.info(
-        "daily $%.2f / $%.2f budget (%.0f%%) | remaining $%.2f | tier=%s -> %s | model=%s",
-        daily_spend, daily_budget, spent_pct, remaining,
-        state.get("last_default_tier"), target_tier, target_model,
-    )
-
     current_default_tier = state.get("last_default_tier")
     current_session_patch_tier = state.get("last_session_patch_tier")
 
     # Detect daily reset: spent went from high to near-zero
     last_pct = float(state.get("last_spent_pct", 0))
     if last_pct > 30 and spent_pct < 10:
-        log.info("Daily reset detected (%.0f%% -> %.0f%%); forcing best tier", last_pct, spent_pct)
         target_tier = tiers[0]["key"]
         target_model = tiers[0]["model"]
+        log.info("Daily reset detected (%.0f%% -> %.0f%%); forcing tier=%s", last_pct, spent_pct, target_tier)
+
+    log.info(
+        "daily $%.2f / $%.2f budget (%.0f%%) | remaining $%.2f | tier=%s -> %s | model=%s",
+        daily_spend, daily_budget, spent_pct, remaining,
+        current_default_tier, target_tier, target_model,
+    )
 
     if current_default_tier != target_tier:
         log.info("Switching default model to %s", target_model)
