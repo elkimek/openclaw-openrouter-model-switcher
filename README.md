@@ -31,7 +31,7 @@ As credits deplete, the daily budget shrinks automatically, making the tiers mor
 | 70-90% | kimi | `openrouter/moonshotai/kimi-k2.5` |
 | 90%+ | cheap | `openrouter/qwen/qwen3.5-9b` |
 
-Edit `MODELS` and `MODEL_TIERS` in `openrouter-model-switcher.py` for different tradeoffs.
+These are the defaults. Change them at runtime via `budget-ctl.py tiers` or the `/budget` skill — no file editing needed.
 
 ## Setup
 
@@ -77,14 +77,23 @@ Log file: `~/.openclaw/or-switch.log`
 
 ### `budget-ctl.py`
 
-View and change the budget at runtime.
+View and change the budget and model tiers at runtime.
 
 ```bash
-python3 budget-ctl.py status       # show current budget, spend, tier
-python3 budget-ctl.py set 5        # set fixed $5/day budget
-python3 budget-ctl.py auto         # auto-scale over 30 days (default)
-python3 budget-ctl.py auto 60      # auto-scale over 60 days
+python3 budget-ctl.py status                              # budget, spend, tiers, days-left estimate
+python3 budget-ctl.py set 5                               # fixed $5/day budget
+python3 budget-ctl.py auto                                # auto-scale over 30 days
+python3 budget-ctl.py auto 60                             # auto-scale over 60 days
+python3 budget-ctl.py tiers                               # show current tiers (active marked)
+python3 budget-ctl.py tiers set cheap google/gemini-3-flash          # change a tier's model
+python3 budget-ctl.py tiers set mid minimax/minimax-m2.5 55          # add tier at 55%
+python3 budget-ctl.py tiers remove mid                               # remove a tier
+python3 budget-ctl.py tiers reset                                    # restore defaults
 ```
+
+Model IDs auto-prefix `openrouter/` — just use `provider/model` (e.g. `anthropic/claude-sonnet-4.6`).
+
+Tiers are stored in `~/.openclaw/or-tiers.json`. Duplicate thresholds are rejected.
 
 ### OpenClaw `/budget` skill
 
@@ -95,7 +104,7 @@ mkdir -p ~/.openclaw/workspace/skills/budget
 cp skill/SKILL.md ~/.openclaw/workspace/skills/budget/SKILL.md
 ```
 
-Then use `/budget`, `/budget set 5`, or `/budget auto` from any connected channel (Matrix, SimpleX, etc.).
+Then use `/budget`, `/budget set 5`, `/budget tiers`, etc. from any connected channel (Matrix, SimpleX, etc.). The skill handles natural language — saying "change cheap to gemini flash" or "add a tier at 50%" works.
 
 **Note:** The skill references absolute paths. Update the paths in `SKILL.md` if your install location differs from `~/.openclaw/openrouter-model-switcher/`.
 

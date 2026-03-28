@@ -1,6 +1,6 @@
 ---
 name: budget
-description: "View or change the OpenRouter daily spending budget and model tiers. Use when: user asks about budget, spending, credits, model tier, or says /budget. Examples: '/budget', '/budget set 5', '/budget auto', '/budget tiers', '/budget tiers set cheap=openrouter/google/gemini-3-flash'."
+description: "View or change the OpenRouter daily spending budget and model tiers. Use when: user asks about budget, spending, credits, model tier, cost, or says /budget. Examples: '/budget', '/budget set 5', '/budget auto', '/budget tiers', '/budget tiers set cheap gemini-3-flash'."
 user-invocable: true
 metadata: { "openclaw": { "requires": { "bins": ["python3"] } } }
 ---
@@ -9,95 +9,85 @@ metadata: { "openclaw": { "requires": { "bins": ["python3"] } } }
 
 Manage the OpenRouter daily spending budget and model tier switching.
 
-## Usage
+The base command is:
+```
+python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py
+```
 
-The user says `/budget` with an optional subcommand. Parse their intent and run the matching command below.
+## Parsing user input
+
+The user may say things casually. Map their intent to the right subcommand:
+
+- "budget", "status", "how much", "spending" -> `status`
+- a bare number like "/budget 5" -> `set 5`
+- "auto", "auto 60 days" -> `auto [days]`
+- "tiers", "models", "what models", "ladder" -> `tiers`
+- "set cheap to gemini flash", "change cheap model to X" -> `tiers set cheap <model>`
+- "add a tier at 50% called mid with gemini" -> `tiers set mid <model> 50`
+- "remove the kimi tier" -> `tiers remove kimi`
+- "reset tiers", "default tiers" -> `tiers reset`
 
 ## Commands
 
-### Status (default)
-
-Show current budget mode, daily spend, remaining credits, and active tier.
+### status (default — no args)
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py status
+budget-ctl.py status
 ```
 
-Present the JSON output to the user in a readable format like:
-- **Mode**: auto ($0.57/day over 30d) or fixed ($5.00/day)
-- **Today**: $0.82 spent (27% of budget)
-- **Credits**: $17.14 remaining
-- **Tier**: sonnet (openrouter/anthropic/claude-sonnet-4.6)
+Present the JSON response in a readable format:
+- Mode and daily budget
+- Today's spend and % of budget
+- Remaining credits and estimated days left
+- Current tier (marked with an arrow or star in the tier list)
 
-### Set fixed budget
-
-User says `/budget set 5` or `/budget 5` (a number).
+### set <amount>
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py set <amount>
+budget-ctl.py set 5
 ```
 
-### Switch to auto mode
+Sets a fixed daily budget. Confirm the new amount.
 
-User says `/budget auto` or `/budget auto 20`.
+### auto [days]
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py auto [days]
+budget-ctl.py auto 30
 ```
 
-Default target is 30 days if not specified.
+Auto-scales: remaining credits / target days = daily budget. Default 30 days.
 
-### Show tiers
-
-User says `/budget tiers`.
+### tiers
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py tiers
+budget-ctl.py tiers
 ```
 
-Show the tiers as a table with threshold %, tier name, and model.
+Show all tiers as a table. The active tier has `"active": true`.
 
-### Change a tier's model
-
-User says `/budget tiers set <key>=<model>`, e.g. `/budget tiers set cheap=openrouter/google/gemini-3-flash`.
+### tiers set <key> <model> [<threshold>]
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py tiers set "<key>=<model>"
+budget-ctl.py tiers set cheap "google/gemini-3-flash"
+budget-ctl.py tiers set mid "minimax/minimax-m2.5" 55
 ```
 
-The key must match an existing tier name (sonnet, gpt, kimi, cheap, etc.).
+Creates or updates a tier. Notes:
+- Model auto-prefixes `openrouter/` — user can say just `anthropic/claude-sonnet-4.6` or `google/gemini-3-flash`
+- If the key already exists, updates the model (and threshold if provided)
+- If the key is new, threshold is required
+- Duplicate thresholds are rejected
 
-### Add a new tier
-
-User says `/budget tiers add <pct> <key>=<model>`, e.g. `/budget tiers add 50 mid=openrouter/google/gemini-3-flash`.
+### tiers remove <key>
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py tiers add <pct> "<key>=<model>"
+budget-ctl.py tiers remove kimi
 ```
 
-### Remove a tier
-
-User says `/budget tiers remove <key>`.
+### tiers reset
 
 ```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py tiers remove <key>
+budget-ctl.py tiers reset
 ```
 
-### Reset tiers to defaults
-
-User says `/budget tiers reset`.
-
-```bash
-python3 /home/elkim/.openclaw/openrouter-model-switcher/budget-ctl.py tiers reset
-```
-
-## Default tiers
-
-| Threshold | Key | Model |
-|---|---|---|
-| 0% | sonnet | openrouter/anthropic/claude-sonnet-4.6 |
-| 40% | gpt | openrouter/openai/gpt-5.4 |
-| 70% | kimi | openrouter/moonshotai/kimi-k2.5 |
-| 90% | cheap | openrouter/qwen/qwen3.5-9b |
-
-The tier changes automatically every 10 minutes via a systemd timer.
+Restores the 4 default tiers (sonnet/gpt/kimi/cheap).

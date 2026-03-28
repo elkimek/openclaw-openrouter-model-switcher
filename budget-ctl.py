@@ -2,15 +2,13 @@
 """Budget control for the OpenRouter model switcher.
 
 Usage:
-    budget-ctl.py status                        Show current budget, spend, and tier
-    budget-ctl.py set <amount>                  Set a fixed daily budget in USD
-    budget-ctl.py auto [days]                   Switch to auto-scaling (default: 30 days)
-    budget-ctl.py get-days                      Print target days for auto mode
-    budget-ctl.py tiers                         Show current model tiers
-    budget-ctl.py tiers set <key>=<model>       Change a tier's model
-    budget-ctl.py tiers add <pct> <key>=<model> Add a new tier at threshold %
-    budget-ctl.py tiers remove <key>            Remove a tier
-    budget-ctl.py tiers reset                   Reset tiers to defaults
+    budget-ctl.py status                            Show budget, spend, tiers, and estimate
+    budget-ctl.py set <amount>                      Set a fixed daily budget in USD
+    budget-ctl.py auto [days]                       Auto-scale budget (default: 30 days)
+    budget-ctl.py tiers                             Show model tiers
+    budget-ctl.py tiers set <key> <model> [<pct>]   Create or update a tier
+    budget-ctl.py tiers remove <key>                Remove a tier
+    budget-ctl.py tiers reset                       Reset tiers to defaults
 """
 
 import json
@@ -35,6 +33,10 @@ DEFAULT_TIERS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def load_env_file(path: Path) -> None:
     if not path.exists():
         return
@@ -56,14 +58,18 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+def die(msg: str):
+    print(msg, file=sys.stderr)
+    raise SystemExit(1)
+
+
 def get_balance_json() -> dict:
     result = subprocess.run(
         [sys.executable, str(BALANCE_SCRIPT)],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
-        print(f"Error fetching balance: {result.stderr.strip()}", file=sys.stderr)
-        raise SystemExit(1)
+        die(f"Error fetching balance: {result.stderr.strip()}")
     return json.loads(result.stdout.strip())
 
 
@@ -80,11 +86,6 @@ def save_override(data: dict) -> None:
     OVERRIDE_FILE.write_text(json.dumps(data, indent=2))
 
 
-def remove_override() -> None:
-    if OVERRIDE_FILE.exists():
-        OVERRIDE_FILE.unlink()
-
-
 def load_state() -> dict:
     if not STATE_FILE.exists():
         return {}
@@ -92,72 +93,6 @@ def load_state() -> dict:
         return json.loads(STATE_FILE.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
-
-
-def resolve_auto_budget(remaining: float, target_days: int) -> float:
-    if remaining <= 0 or target_days <= 0:
-        return 0.01
-    return round(remaining / target_days, 2)
-
-
-def cmd_status():
-    load_env_file(SCRIPT_DIR / ".env")
-    balance = get_balance_json()
-    override = load_override()
-    state = load_state()
-    remaining = balance["remaining"]
-
-    if override and override.get("mode") == "fixed":
-        budget = override["budget"]
-        mode = f"fixed (${budget:.2f}/day)"
-    else:
-        target_days = (override or {}).get("target_days", DEFAULT_TARGET_DAYS)
-        budget = resolve_auto_budget(remaining, target_days)
-        mode = f"auto (${budget:.2f}/day over {target_days}d)"
-
-    daily = balance["usage_daily"]
-    pct = min(100, (daily / budget) * 100) if budget > 0 else 100
-    tier = state.get("current_tier", "unknown")
-
-    print(json.dumps({
-        "mode": mode,
-        "daily_budget": round(budget, 2),
-        "daily_spend": daily,
-        "daily_pct": round(pct),
-        "remaining": remaining,
-        "current_tier": tier,
-    }, indent=2))
-
-
-def cmd_set(amount: float):
-    if amount <= 0:
-        print("Budget must be positive", file=sys.stderr)
-        raise SystemExit(1)
-    save_override({"mode": "fixed", "budget": amount})
-    print(json.dumps({"ok": True, "mode": "fixed", "budget": amount}))
-
-
-def cmd_auto(target_days: int):
-    if target_days <= 0:
-        print("Target days must be positive", file=sys.stderr)
-        raise SystemExit(1)
-    remove_override()
-    save_override({"mode": "auto", "target_days": target_days})
-    load_env_file(SCRIPT_DIR / ".env")
-    balance = get_balance_json()
-    budget = resolve_auto_budget(balance["remaining"], target_days)
-    print(json.dumps({
-        "ok": True, "mode": "auto",
-        "target_days": target_days,
-        "computed_budget": budget,
-        "remaining": balance["remaining"],
-    }))
-
-
-def cmd_get_days():
-    override = load_override()
-    days = (override or {}).get("target_days", DEFAULT_TARGET_DAYS)
-    print(days)
 
 
 def load_tiers() -> list[dict]:
@@ -176,78 +111,161 @@ def load_tiers() -> list[dict]:
 
 
 def save_tiers(tiers: list[dict]) -> None:
-    sorted_tiers = sorted(tiers, key=lambda t: t["threshold"])
-    TIERS_FILE.write_text(json.dumps({"tiers": sorted_tiers}, indent=2))
+    TIERS_FILE.write_text(json.dumps(
+        {"tiers": sorted(tiers, key=lambda t: t["threshold"])}, indent=2
+    ))
+
+
+def resolve_auto_budget(remaining: float, target_days: int) -> float:
+    if remaining <= 0 or target_days <= 0:
+        return 0.01
+    return round(remaining / target_days, 2)
+
+
+def normalize_model(model: str) -> str:
+    """Auto-prefix openrouter/ if the model looks like provider/name without it."""
+    model = model.strip()
+    parts = model.split("/")
+    # Already fully qualified: openrouter/anthropic/claude-sonnet-4.6
+    if len(parts) >= 3 and parts[0] == "openrouter":
+        return model
+    # provider/model format: anthropic/claude-sonnet-4.6 -> openrouter/...
+    if len(parts) == 2:
+        return f"openrouter/{model}"
+    # bare model name — return as-is, user probably knows what they're doing
+    return model
+
+
+def resolve_budget_and_mode(balance: dict) -> tuple[float, str]:
+    override = load_override()
+    remaining = balance["remaining"]
+    if override and override.get("mode") == "fixed":
+        budget = override["budget"]
+        return budget, f"fixed ${budget:.2f}/day"
+    target_days = (override or {}).get("target_days", DEFAULT_TARGET_DAYS)
+    budget = resolve_auto_budget(remaining, target_days)
+    return budget, f"auto ${budget:.2f}/day ({target_days}d)"
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_status():
+    load_env_file(SCRIPT_DIR / ".env")
+    balance = get_balance_json()
+    state = load_state()
+    tiers = load_tiers()
+
+    budget, mode = resolve_budget_and_mode(balance)
+    daily = balance["usage_daily"]
+    remaining = balance["remaining"]
+    pct = min(100, (daily / budget) * 100) if budget > 0 else 100
+    current_tier = state.get("current_tier", "unknown")
+
+    # Estimate days remaining at current daily rate
+    avg_daily = balance.get("usage_weekly", daily * 7) / 7
+    days_left = round(remaining / avg_daily) if avg_daily > 0.001 else 999
+
+    # Mark active tier
+    tier_list = []
+    for t in tiers:
+        entry = {
+            "threshold": t["threshold"],
+            "key": t["key"],
+            "model": t["model"],
+        }
+        if t["key"] == current_tier:
+            entry["active"] = True
+        tier_list.append(entry)
+
+    print(json.dumps({
+        "mode": mode,
+        "daily_budget": round(budget, 2),
+        "daily_spend": round(daily, 2),
+        "daily_pct": round(pct),
+        "remaining": remaining,
+        "days_left": days_left,
+        "current_tier": current_tier,
+        "tiers": tier_list,
+    }, indent=2))
+
+
+def cmd_set(amount: float):
+    if amount <= 0:
+        die("Budget must be positive")
+    save_override({"mode": "fixed", "budget": amount})
+    print(json.dumps({"ok": True, "mode": "fixed", "budget": amount}))
+
+
+def cmd_auto(target_days: int):
+    if target_days <= 0:
+        die("Target days must be positive")
+    save_override({"mode": "auto", "target_days": target_days})
+    load_env_file(SCRIPT_DIR / ".env")
+    balance = get_balance_json()
+    budget = resolve_auto_budget(balance["remaining"], target_days)
+    print(json.dumps({
+        "ok": True, "mode": "auto",
+        "target_days": target_days,
+        "computed_budget": budget,
+        "remaining": balance["remaining"],
+    }))
 
 
 def cmd_tiers():
     tiers = load_tiers()
+    current_tier = load_state().get("current_tier")
+    for t in tiers:
+        if t["key"] == current_tier:
+            t["active"] = True
     print(json.dumps({"tiers": tiers}, indent=2))
 
 
-def cmd_tiers_set(assignment: str):
-    if "=" not in assignment:
-        print("Usage: tiers set <key>=<model>", file=sys.stderr)
-        raise SystemExit(1)
-    key, model = assignment.split("=", 1)
-    key = key.strip()
-    model = model.strip()
-    if not key or not model:
-        print("Both key and model must be non-empty", file=sys.stderr)
-        raise SystemExit(1)
+def cmd_tiers_set(key: str, model: str, threshold: int | None = None):
+    """Create or update a tier. If key exists, update model (and threshold if given).
+    If key doesn't exist, threshold is required to create it."""
+    model = normalize_model(model)
     tiers = load_tiers()
-    found = False
-    for t in tiers:
-        if t["key"] == key:
-            t["model"] = model
-            found = True
-            break
-    if not found:
-        print(f"Tier '{key}' not found. Use 'tiers add' to create a new tier.", file=sys.stderr)
-        raise SystemExit(1)
-    save_tiers(tiers)
-    print(json.dumps({"ok": True, "action": "set", "key": key, "model": model, "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
+    existing = next((t for t in tiers if t["key"] == key), None)
 
-
-def cmd_tiers_add(threshold_str: str, assignment: str):
-    try:
-        threshold = int(threshold_str)
-    except ValueError:
-        print(f"Threshold must be an integer, got: {threshold_str}", file=sys.stderr)
-        raise SystemExit(1)
-    if threshold < 0 or threshold > 100:
-        print("Threshold must be 0-100", file=sys.stderr)
-        raise SystemExit(1)
-    if "=" not in assignment:
-        print("Usage: tiers add <pct> <key>=<model>", file=sys.stderr)
-        raise SystemExit(1)
-    key, model = assignment.split("=", 1)
-    key = key.strip()
-    model = model.strip()
-    if not key or not model:
-        print("Both key and model must be non-empty", file=sys.stderr)
-        raise SystemExit(1)
-    tiers = load_tiers()
-    for t in tiers:
-        if t["key"] == key:
-            print(f"Tier '{key}' already exists. Use 'tiers set' to change it.", file=sys.stderr)
-            raise SystemExit(1)
-    tiers.append({"threshold": threshold, "key": key, "model": model})
-    save_tiers(tiers)
-    print(json.dumps({"ok": True, "action": "add", "key": key, "threshold": threshold, "model": model, "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
+    if existing:
+        existing["model"] = model
+        if threshold is not None:
+            # Check for threshold collision with a different tier
+            for t in tiers:
+                if t["key"] != key and t["threshold"] == threshold:
+                    die(f"Threshold {threshold}% is already used by tier '{t['key']}'")
+            existing["threshold"] = threshold
+        save_tiers(tiers)
+        print(json.dumps({"ok": True, "action": "updated", "key": key,
+                          "model": model, "threshold": existing["threshold"],
+                          "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
+    else:
+        if threshold is None:
+            die(f"Tier '{key}' doesn't exist yet — provide a threshold: tiers set {key} {model} <pct>")
+        if threshold < 0 or threshold > 100:
+            die("Threshold must be 0-100")
+        for t in tiers:
+            if t["threshold"] == threshold:
+                die(f"Threshold {threshold}% is already used by tier '{t['key']}'")
+        tiers.append({"threshold": threshold, "key": key, "model": model})
+        save_tiers(tiers)
+        print(json.dumps({"ok": True, "action": "created", "key": key,
+                          "model": model, "threshold": threshold,
+                          "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
 
 
 def cmd_tiers_remove(key: str):
     tiers = load_tiers()
     new_tiers = [t for t in tiers if t["key"] != key]
     if len(new_tiers) == len(tiers):
-        print(f"Tier '{key}' not found", file=sys.stderr)
-        raise SystemExit(1)
+        die(f"Tier '{key}' not found")
     if not new_tiers:
-        print("Cannot remove the last tier", file=sys.stderr)
-        raise SystemExit(1)
+        die("Cannot remove the last tier")
     save_tiers(new_tiers)
-    print(json.dumps({"ok": True, "action": "remove", "key": key, "tiers": sorted(new_tiers, key=lambda t: t["threshold"])}))
+    print(json.dumps({"ok": True, "action": "removed", "key": key,
+                      "tiers": new_tiers}))
 
 
 def cmd_tiers_reset():
@@ -255,50 +273,47 @@ def cmd_tiers_reset():
     print(json.dumps({"ok": True, "action": "reset", "tiers": DEFAULT_TIERS}))
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__.strip())
         raise SystemExit(1)
 
     cmd = sys.argv[1]
+
     if cmd == "status":
         cmd_status()
     elif cmd == "set":
         if len(sys.argv) < 3:
-            print("Usage: budget-ctl.py set <amount>", file=sys.stderr)
-            raise SystemExit(1)
+            die("Usage: set <amount>")
         cmd_set(float(sys.argv[2]))
     elif cmd == "auto":
         days = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_TARGET_DAYS
         cmd_auto(days)
-    elif cmd == "get-days":
-        cmd_get_days()
     elif cmd == "tiers":
         if len(sys.argv) < 3:
             cmd_tiers()
         elif sys.argv[2] == "set":
-            if len(sys.argv) < 4:
-                print("Usage: tiers set <key>=<model>", file=sys.stderr)
-                raise SystemExit(1)
-            cmd_tiers_set(sys.argv[3])
-        elif sys.argv[2] == "add":
+            # tiers set <key> <model> [<pct>]
             if len(sys.argv) < 5:
-                print("Usage: tiers add <pct> <key>=<model>", file=sys.stderr)
-                raise SystemExit(1)
-            cmd_tiers_add(sys.argv[3], sys.argv[4])
+                die("Usage: tiers set <key> <model> [<threshold_pct>]")
+            key = sys.argv[3]
+            model = sys.argv[4]
+            threshold = int(sys.argv[5]) if len(sys.argv) > 5 else None
+            cmd_tiers_set(key, model, threshold)
         elif sys.argv[2] == "remove":
             if len(sys.argv) < 4:
-                print("Usage: tiers remove <key>", file=sys.stderr)
-                raise SystemExit(1)
+                die("Usage: tiers remove <key>")
             cmd_tiers_remove(sys.argv[3])
         elif sys.argv[2] == "reset":
             cmd_tiers_reset()
         else:
-            print(f"Unknown tiers subcommand: {sys.argv[2]}", file=sys.stderr)
-            raise SystemExit(1)
+            die(f"Unknown tiers subcommand: {sys.argv[2]}")
     else:
-        print(f"Unknown command: {cmd}", file=sys.stderr)
-        raise SystemExit(1)
+        die(f"Unknown command: {cmd}")
 
 
 if __name__ == "__main__":
