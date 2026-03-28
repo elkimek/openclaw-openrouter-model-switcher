@@ -26,10 +26,10 @@ As credits deplete, the daily budget shrinks automatically, making the tiers mor
 
 | Daily spend | Tier | Model |
 |---|---|---|
-| 0-40% | sonnet | `openrouter/anthropic/claude-sonnet-4.6` |
-| 40-70% | gpt | `openrouter/openai/gpt-5.4` |
-| 70-90% | kimi | `openrouter/moonshotai/kimi-k2.5` |
-| 90%+ | cheap | `openrouter/qwen/qwen3.5-9b` |
+| 0-35% | sonnet | `openrouter/anthropic/claude-sonnet-4.6` | $15/M out |
+| 35-65% | gpt | `openrouter/x-ai/grok-4.20-beta` | $6/M out |
+| 65-90% | kimi | `openrouter/openai/gpt-4.1-mini` | $1.60/M out |
+| 90%+ | cheap | `openrouter/qwen/qwen3-235b-a22b-2507` | $0.10/M out |
 
 These are the defaults. Change them at runtime via `budget-ctl.py tiers` or the `/budget` skill — no file editing needed.
 

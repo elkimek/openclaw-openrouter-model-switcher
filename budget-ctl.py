@@ -27,9 +27,9 @@ DEFAULT_TARGET_DAYS = 30
 
 DEFAULT_TIERS = [
     {"threshold": 0,  "key": "sonnet", "model": "openrouter/anthropic/claude-sonnet-4.6"},
-    {"threshold": 40, "key": "gpt",    "model": "openrouter/openai/gpt-5.4"},
-    {"threshold": 70, "key": "kimi",   "model": "openrouter/moonshotai/kimi-k2.5"},
-    {"threshold": 90, "key": "cheap",  "model": "openrouter/qwen/qwen3.5-9b"},
+    {"threshold": 35, "key": "gpt",    "model": "openrouter/x-ai/grok-4.20-beta"},
+    {"threshold": 65, "key": "kimi",   "model": "openrouter/openai/gpt-4.1-mini"},
+    {"threshold": 90, "key": "cheap",  "model": "openrouter/qwen/qwen3-235b-a22b-2507"},
 ]
 
 
