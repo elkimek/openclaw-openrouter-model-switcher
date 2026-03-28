@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenClaw OpenRouter model switcher
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/repo
+ExecStart=/usr/bin/python3 /path/to/repo/openrouter-model-switcher.py
