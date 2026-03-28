@@ -26,10 +26,10 @@ BALANCE_SCRIPT = SCRIPT_DIR / "openrouter_balance.py"
 DEFAULT_TARGET_DAYS = 30
 
 DEFAULT_TIERS = [
-    {"threshold": 0,  "key": "sonnet", "model": "openrouter/anthropic/claude-sonnet-4.6"},
-    {"threshold": 35, "key": "gpt",    "model": "openrouter/x-ai/grok-4.20-beta"},
-    {"threshold": 65, "key": "kimi",   "model": "openrouter/openai/gpt-4.1-mini"},
-    {"threshold": 90, "key": "cheap",  "model": "openrouter/qwen/qwen3-235b-a22b-2507"},
+    {"threshold": 0,  "key": "best",     "model": "openrouter/anthropic/claude-sonnet-4.6"},
+    {"threshold": 35, "key": "good",     "model": "openrouter/x-ai/grok-4.20-beta"},
+    {"threshold": 65, "key": "cheap",    "model": "openrouter/x-ai/grok-4.1-fast"},
+    {"threshold": 90, "key": "cheapest", "model": "openrouter/qwen/qwen3.5-9b"},
 ]
 
 

@@ -90,4 +90,4 @@ budget-ctl.py tiers remove kimi
 budget-ctl.py tiers reset
 ```
 
-Restores the 4 default tiers (sonnet/gpt/kimi/cheap).
+Restores the 4 default tiers (best/good/cheap/cheapest).
