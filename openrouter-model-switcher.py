@@ -27,22 +27,30 @@ DEFAULT_ENV_FILE = SCRIPT_DIR / ".env"
 DEFAULT_DAILY_BUDGET = 3.0
 DEFAULT_TARGET_DAYS = 30
 OVERRIDE_FILE = STATE_DIR / "or-budget-override.json"
+TIERS_FILE = STATE_DIR / "or-tiers.json"
 
-# Model tiers: (threshold_pct, tier_key)
-# At 0% of daily budget -> best model, degrades as spend increases.
-MODEL_TIERS = [
-    (0,  "sonnet"),
-    (40, "gpt"),
-    (70, "kimi"),
-    (90, "cheap"),
+# Default tiers used when or-tiers.json doesn't exist.
+DEFAULT_TIERS = [
+    {"threshold": 0,  "key": "sonnet", "model": "openrouter/anthropic/claude-sonnet-4.6"},
+    {"threshold": 40, "key": "gpt",    "model": "openrouter/openai/gpt-5.4"},
+    {"threshold": 70, "key": "kimi",   "model": "openrouter/moonshotai/kimi-k2.5"},
+    {"threshold": 90, "key": "cheap",  "model": "openrouter/qwen/qwen3.5-9b"},
 ]
 
-MODELS = {
-    "sonnet": "openrouter/anthropic/claude-sonnet-4.6",
-    "gpt":    "openrouter/openai/gpt-5.4",
-    "kimi":   "openrouter/moonshotai/kimi-k2.5",
-    "cheap":  "openrouter/qwen/qwen3.5-9b",
-}
+
+def load_tiers() -> list[dict]:
+    if TIERS_FILE.exists():
+        try:
+            data = json.loads(TIERS_FILE.read_text())
+            tiers = data.get("tiers", [])
+            if tiers and all(
+                isinstance(t, dict) and "threshold" in t and "key" in t and "model" in t
+                for t in tiers
+            ):
+                return sorted(tiers, key=lambda t: t["threshold"])
+        except (json.JSONDecodeError, OSError):
+            pass
+    return list(DEFAULT_TIERS)
 
 
 def parse_args() -> argparse.Namespace:
@@ -182,12 +190,15 @@ def resolve_daily_budget(args, remaining: float) -> float:
     return DEFAULT_DAILY_BUDGET
 
 
-def get_target_tier(spent_pct: float) -> str:
-    target = MODEL_TIERS[0][1]
-    for threshold, tier in MODEL_TIERS:
-        if spent_pct >= threshold:
-            target = tier
-    return target
+def get_target_tier(spent_pct: float, tiers: list[dict]) -> tuple[str, str]:
+    """Return (tier_key, model_id) for the given spend percentage."""
+    target_key = tiers[0]["key"]
+    target_model = tiers[0]["model"]
+    for t in tiers:
+        if spent_pct >= t["threshold"]:
+            target_key = t["key"]
+            target_model = t["model"]
+    return target_key, target_model
 
 
 def load_state() -> dict:
@@ -268,6 +279,7 @@ def main() -> int:
     daily_spend = get_daily_spend()
     remaining = get_remaining_credits()
     daily_budget = resolve_daily_budget(args, remaining)
+    tiers = load_tiers()
 
     if remaining <= 0:
         log.warning("No credits remaining ($%.2f). Forcing cheapest tier.", remaining)
@@ -276,8 +288,7 @@ def main() -> int:
         spent_pct = min(100.0, (daily_spend / daily_budget) * 100)
 
     state = load_state()
-    target_tier = get_target_tier(spent_pct)
-    target_model = MODELS[target_tier]
+    target_tier, target_model = get_target_tier(spent_pct, tiers)
 
     log.info(
         "daily $%.2f / $%.2f budget (%.0f%%) | remaining $%.2f | tier=%s -> %s | model=%s",
@@ -291,9 +302,9 @@ def main() -> int:
     # Detect daily reset: spent went from high to near-zero
     last_pct = float(state.get("last_spent_pct", 0))
     if last_pct > 30 and spent_pct < 10:
-        log.info("Daily reset detected (%.0f%% -> %.0f%%); forcing sonnet", last_pct, spent_pct)
-        target_tier = "sonnet"
-        target_model = MODELS[target_tier]
+        log.info("Daily reset detected (%.0f%% -> %.0f%%); forcing best tier", last_pct, spent_pct)
+        target_tier = tiers[0]["key"]
+        target_model = tiers[0]["model"]
 
     if current_default_tier != target_tier:
         log.info("Switching default model to %s", target_model)

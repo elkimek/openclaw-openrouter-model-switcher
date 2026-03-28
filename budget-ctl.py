@@ -2,10 +2,15 @@
 """Budget control for the OpenRouter model switcher.
 
 Usage:
-    budget-ctl.py status          Show current budget, spend, and tier
-    budget-ctl.py set <amount>    Set a fixed daily budget in USD
-    budget-ctl.py auto [days]     Switch to auto-scaling (default: 30 days)
-    budget-ctl.py get-days        Print target days for auto mode
+    budget-ctl.py status                        Show current budget, spend, and tier
+    budget-ctl.py set <amount>                  Set a fixed daily budget in USD
+    budget-ctl.py auto [days]                   Switch to auto-scaling (default: 30 days)
+    budget-ctl.py get-days                      Print target days for auto mode
+    budget-ctl.py tiers                         Show current model tiers
+    budget-ctl.py tiers set <key>=<model>       Change a tier's model
+    budget-ctl.py tiers add <pct> <key>=<model> Add a new tier at threshold %
+    budget-ctl.py tiers remove <key>            Remove a tier
+    budget-ctl.py tiers reset                   Reset tiers to defaults
 """
 
 import json
@@ -18,8 +23,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path.home() / ".openclaw"
 OVERRIDE_FILE = STATE_DIR / "or-budget-override.json"
 STATE_FILE = STATE_DIR / "or-switch-state.json"
+TIERS_FILE = STATE_DIR / "or-tiers.json"
 BALANCE_SCRIPT = SCRIPT_DIR / "openrouter_balance.py"
 DEFAULT_TARGET_DAYS = 30
+
+DEFAULT_TIERS = [
+    {"threshold": 0,  "key": "sonnet", "model": "openrouter/anthropic/claude-sonnet-4.6"},
+    {"threshold": 40, "key": "gpt",    "model": "openrouter/openai/gpt-5.4"},
+    {"threshold": 70, "key": "kimi",   "model": "openrouter/moonshotai/kimi-k2.5"},
+    {"threshold": 90, "key": "cheap",  "model": "openrouter/qwen/qwen3.5-9b"},
+]
 
 
 def load_env_file(path: Path) -> None:
@@ -147,6 +160,101 @@ def cmd_get_days():
     print(days)
 
 
+def load_tiers() -> list[dict]:
+    if TIERS_FILE.exists():
+        try:
+            data = json.loads(TIERS_FILE.read_text())
+            tiers = data.get("tiers", [])
+            if tiers and all(
+                isinstance(t, dict) and "threshold" in t and "key" in t and "model" in t
+                for t in tiers
+            ):
+                return sorted(tiers, key=lambda t: t["threshold"])
+        except (json.JSONDecodeError, OSError):
+            pass
+    return list(DEFAULT_TIERS)
+
+
+def save_tiers(tiers: list[dict]) -> None:
+    sorted_tiers = sorted(tiers, key=lambda t: t["threshold"])
+    TIERS_FILE.write_text(json.dumps({"tiers": sorted_tiers}, indent=2))
+
+
+def cmd_tiers():
+    tiers = load_tiers()
+    print(json.dumps({"tiers": tiers}, indent=2))
+
+
+def cmd_tiers_set(assignment: str):
+    if "=" not in assignment:
+        print("Usage: tiers set <key>=<model>", file=sys.stderr)
+        raise SystemExit(1)
+    key, model = assignment.split("=", 1)
+    key = key.strip()
+    model = model.strip()
+    if not key or not model:
+        print("Both key and model must be non-empty", file=sys.stderr)
+        raise SystemExit(1)
+    tiers = load_tiers()
+    found = False
+    for t in tiers:
+        if t["key"] == key:
+            t["model"] = model
+            found = True
+            break
+    if not found:
+        print(f"Tier '{key}' not found. Use 'tiers add' to create a new tier.", file=sys.stderr)
+        raise SystemExit(1)
+    save_tiers(tiers)
+    print(json.dumps({"ok": True, "action": "set", "key": key, "model": model, "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
+
+
+def cmd_tiers_add(threshold_str: str, assignment: str):
+    try:
+        threshold = int(threshold_str)
+    except ValueError:
+        print(f"Threshold must be an integer, got: {threshold_str}", file=sys.stderr)
+        raise SystemExit(1)
+    if threshold < 0 or threshold > 100:
+        print("Threshold must be 0-100", file=sys.stderr)
+        raise SystemExit(1)
+    if "=" not in assignment:
+        print("Usage: tiers add <pct> <key>=<model>", file=sys.stderr)
+        raise SystemExit(1)
+    key, model = assignment.split("=", 1)
+    key = key.strip()
+    model = model.strip()
+    if not key or not model:
+        print("Both key and model must be non-empty", file=sys.stderr)
+        raise SystemExit(1)
+    tiers = load_tiers()
+    for t in tiers:
+        if t["key"] == key:
+            print(f"Tier '{key}' already exists. Use 'tiers set' to change it.", file=sys.stderr)
+            raise SystemExit(1)
+    tiers.append({"threshold": threshold, "key": key, "model": model})
+    save_tiers(tiers)
+    print(json.dumps({"ok": True, "action": "add", "key": key, "threshold": threshold, "model": model, "tiers": sorted(tiers, key=lambda t: t["threshold"])}))
+
+
+def cmd_tiers_remove(key: str):
+    tiers = load_tiers()
+    new_tiers = [t for t in tiers if t["key"] != key]
+    if len(new_tiers) == len(tiers):
+        print(f"Tier '{key}' not found", file=sys.stderr)
+        raise SystemExit(1)
+    if not new_tiers:
+        print("Cannot remove the last tier", file=sys.stderr)
+        raise SystemExit(1)
+    save_tiers(new_tiers)
+    print(json.dumps({"ok": True, "action": "remove", "key": key, "tiers": sorted(new_tiers, key=lambda t: t["threshold"])}))
+
+
+def cmd_tiers_reset():
+    save_tiers(list(DEFAULT_TIERS))
+    print(json.dumps({"ok": True, "action": "reset", "tiers": DEFAULT_TIERS}))
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__.strip())
@@ -165,6 +273,29 @@ def main():
         cmd_auto(days)
     elif cmd == "get-days":
         cmd_get_days()
+    elif cmd == "tiers":
+        if len(sys.argv) < 3:
+            cmd_tiers()
+        elif sys.argv[2] == "set":
+            if len(sys.argv) < 4:
+                print("Usage: tiers set <key>=<model>", file=sys.stderr)
+                raise SystemExit(1)
+            cmd_tiers_set(sys.argv[3])
+        elif sys.argv[2] == "add":
+            if len(sys.argv) < 5:
+                print("Usage: tiers add <pct> <key>=<model>", file=sys.stderr)
+                raise SystemExit(1)
+            cmd_tiers_add(sys.argv[3], sys.argv[4])
+        elif sys.argv[2] == "remove":
+            if len(sys.argv) < 4:
+                print("Usage: tiers remove <key>", file=sys.stderr)
+                raise SystemExit(1)
+            cmd_tiers_remove(sys.argv[3])
+        elif sys.argv[2] == "reset":
+            cmd_tiers_reset()
+        else:
+            print(f"Unknown tiers subcommand: {sys.argv[2]}", file=sys.stderr)
+            raise SystemExit(1)
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         raise SystemExit(1)
